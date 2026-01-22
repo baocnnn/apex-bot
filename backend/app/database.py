@@ -3,11 +3,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# Get database URL from environment variable, fallback to local for development
-SQLALCHEMY_DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://postgres:root@localhost:5432/praise_app"
-)
+# Try DATABASE_PUBLIC_URL first (for Railway), then DATABASE_URL, then local
+SQLALCHEMY_DATABASE_URL = os.environ.get("DATABASE_PUBLIC_URL") or os.environ.get("DATABASE_URL")
+
+if not SQLALCHEMY_DATABASE_URL:
+    # Fallback to local for development
+    SQLALCHEMY_DATABASE_URL = "postgresql://postgres:root@localhost:5432/praise_app"
 
 # Railway uses 'postgres://' but SQLAlchemy needs 'postgresql://'
 if SQLALCHEMY_DATABASE_URL.startswith("postgres://"):
