@@ -6,15 +6,21 @@ from datetime import timedelta
 from . import models, schemas, auth
 from .database import engine, get_db
 
-# Create all tables in the database
-models.Base.metadata.create_all(bind=engine)
-
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    models.Base.metadata.create_all(bind=engine)
+    yield
+app = FastAPI(lifespan=lifespan)
 
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Frontend URL
+    allow_origins=[
+        "http://localhost:5173",
+        "https://*.vercel.app",
+        "https://*.netlify.app",
+        "*",  
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
