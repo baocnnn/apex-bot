@@ -1,44 +1,25 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import GivePraise from './pages/GivePraise';
 import MyProfile from './pages/MyProfile';
 import Rewards from './pages/Rewards';
+import Admin from './pages/Admin';
 import ProtectedRoute from './components/ProtectedRoute';
 import Navbar from './components/Navbar';
-import Admin from './pages/Admin';
 import { authService } from './services/auth';
 
-function App() {
+function AppContent() {
+  const location = useLocation();  // This causes re-render on navigation
   const isAuthenticated = authService.isAuthenticated();
-   useEffect(() => {
-    const checkAuth = () => {
-      setIsAuthenticated(authService.isAuthenticated());
-    };
 
-    // Check on mount
-    checkAuth();
-
-    // Listen for storage changes (when token is added/removed)
-    window.addEventListener('storage', checkAuth);
-    
-    // Also check periodically (for same-tab updates)
-    const interval = setInterval(checkAuth, 1000);
-
-    return () => {
-      window.removeEventListener('storage', checkAuth);
-      clearInterval(interval);
-    };
-  }, []);
   return (
-    <Router>
+    <>
       {isAuthenticated && <Navbar />}
       
       <Routes>
-        {/* Public route */}
         <Route path="/login" element={<Login />} />
 
-        {/* Protected routes */}
         <Route
           path="/dashboard"
           element={
@@ -80,12 +61,19 @@ function App() {
           }
         />
 
-        {/* Default redirect */}
         <Route 
           path="/" 
           element={<Navigate to={isAuthenticated ? "/dashboard" : "/login"} replace />} 
         />
       </Routes>
+    </>
+  );
+}
+
+function App() {
+  return (
+    <Router>
+      <AppContent />
     </Router>
   );
 }
