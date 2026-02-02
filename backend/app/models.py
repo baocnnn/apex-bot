@@ -12,6 +12,7 @@ class User(Base):
     first_name = Column(String, nullable=False)
     last_name = Column(String, nullable=False)
     points_balance = Column(Integer, default=0)
+    slack_id = Column(String, unique=True, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships

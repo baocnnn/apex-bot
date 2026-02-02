@@ -6,6 +6,7 @@ from datetime import timedelta
 from contextlib import asynccontextmanager
 from . import models, schemas, auth
 from .database import engine, get_db
+from .slack_endpoints import router as slack_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,6 +27,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(slack_router)
 # ============== AUTHENTICATION ENDPOINTS ==============
 
 @app.post("/register", response_model=schemas.UserResponse)
