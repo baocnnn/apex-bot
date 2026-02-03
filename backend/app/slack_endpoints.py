@@ -23,7 +23,6 @@ def verify_slack_signature(request_body: bytes, timestamp: str, signature: str):
     ).hexdigest()
     
     return hmac.compare_digest(my_signature, signature)
-
 @router.post("/slack/praise")
 async def slack_praise_command(request: Request, db: Session = Depends(get_db)):
     """Handle /praise command from Slack"""
@@ -40,7 +39,7 @@ async def slack_praise_command(request: Request, db: Session = Depends(get_db)):
     # Parse form data
     form_data = await request.form()
     slack_user_id = form_data.get("user_id")
-    text = form_data.get("text", "")
+    text = form_data.get("text", "").strip()
     
     # Get giver from database
     giver = get_user_by_slack_id(slack_user_id, db)
@@ -51,25 +50,43 @@ async def slack_praise_command(request: Request, db: Session = Depends(get_db)):
         }
     
     # Parse the command text
-    # Expected format: @user "message" #core-value
+    # Expected format: <@U12345|user> "message" #core-value
+    # Or: <@U12345> "message" #core-value
+    
+    # Extract receiver Slack ID from mention
+    receiver_slack_id = None
+    if text.startswith("<@"):
+        # Find the end of the mention
+        end_idx = text.find(">")
+        if end_idx != -1:
+            mention = text[2:end_idx]  # Remove <@ and >
+            receiver_slack_id = mention.split("|")[0]  # Get ID before | if present
+            text = text[end_idx+1:].strip()  # Remove mention from text
+    
+    if not receiver_slack_id:
+        return {
+            "response_type": "ephemeral",
+            "text": "❌ Please mention a user. Usage: `/praise @user \"message\" #core-value`"
+        }
+    
+    # Now parse message and core value from remaining text
+    # Format should be: "message" #core-value
+    if '"' not in text:
+        return {
+            "response_type": "ephemeral",
+            "text": "❌ Please put your message in quotes. Usage: `/praise @user \"Your message\" #core-value`"
+        }
+    
+    # Extract message between quotes
     parts = text.split('"')
     if len(parts) < 3:
         return {
             "response_type": "ephemeral",
-            "text": "❌ Invalid format. Use: `/praise @user \"Your message here\" #core-value`"
+            "text": "❌ Invalid format. Usage: `/praise @user \"Your message\" #core-value`"
         }
     
-    receiver_mention = parts[0].strip()
     message = parts[1]
     core_value_text = parts[2].strip()
-    
-    # Extract receiver Slack ID
-    receiver_slack_id = parse_slack_user_id(receiver_mention)
-    if not receiver_slack_id:
-        return {
-            "response_type": "ephemeral",
-            "text": "❌ Please mention a user with @username"
-        }
     
     # Get receiver from database
     receiver = get_user_by_slack_id(receiver_slack_id, db)
