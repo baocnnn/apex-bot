@@ -35,3 +35,19 @@ def parse_slack_user_id(text):
     if text.startswith("<@") and ">" in text:
         return text.split("<@")[1].split(">")[0].split("|")[0]
     return None
+
+def get_slack_user_by_username(username):
+    """Get Slack user ID by username"""
+    try:
+        # Remove @ if present
+        username = username.lstrip('@')
+        
+        # Search for user by display name or real name
+        response = slack_client.users_list()
+        for user in response["members"]:
+            if user.get("name") == username or user.get("profile", {}).get("display_name") == username:
+                return user["id"]
+        return None
+    except SlackApiError as e:
+        print(f"Error finding user: {e}")
+        return None

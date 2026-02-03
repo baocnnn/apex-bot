@@ -26,6 +26,8 @@ def verify_slack_signature(request_body: bytes, timestamp: str, signature: str):
 @router.post("/slack/praise")
 async def slack_praise_command(request: Request, db: Session = Depends(get_db)):
     """Handle /praise command from Slack"""
+    from .slack_utils import get_slack_user_by_username
+    
     # Get raw body for signature verification
     body = await request.body()
     
@@ -41,40 +43,24 @@ async def slack_praise_command(request: Request, db: Session = Depends(get_db)):
     slack_user_id = form_data.get("user_id")
     text = form_data.get("text", "").strip()
     
-    # DEBUG: Show what we received
-    return {
-        "response_type": "ephemeral",
-        "text": f"DEBUG - Received text: `{text}`\n\nFirst 50 chars: `{text[:50]}`"
-    }
-    # Parse the command text
-    # Expected format: <@U12345|user> "message" #core-value
-    # Or: <@U12345> "message" #core-value
-    
-    # Extract receiver Slack ID from mention
-    receiver_slack_id = None
-    if text.startswith("<@"):
-        # Find the end of the mention
-        end_idx = text.find(">")
-        if end_idx != -1:
-            mention = text[2:end_idx]  # Remove <@ and >
-            receiver_slack_id = mention.split("|")[0]  # Get ID before | if present
-            text = text[end_idx+1:].strip()  # Remove mention from text
-    
-    if not receiver_slack_id:
+    # Get giver from database
+    giver = get_user_by_slack_id(slack_user_id, db)
+    if not giver:
         return {
             "response_type": "ephemeral",
-            "text": "❌ Please mention a user. Usage: `/praise @user \"message\" #core-value`"
+            "text": "❌ You need to link your Slack account first. Please register on the web app and we'll connect your account."
         }
     
-    # Now parse message and core value from remaining text
-    # Format should be: "message" #core-value
+    # Parse the command text
+    # Expected format: @username "message" #core-value
+    
+    # Extract message between quotes
     if '"' not in text:
         return {
             "response_type": "ephemeral",
             "text": "❌ Please put your message in quotes. Usage: `/praise @user \"Your message\" #core-value`"
         }
     
-    # Extract message between quotes
     parts = text.split('"')
     if len(parts) < 3:
         return {
@@ -82,17 +68,36 @@ async def slack_praise_command(request: Request, db: Session = Depends(get_db)):
             "text": "❌ Invalid format. Usage: `/praise @user \"Your message\" #core-value`"
         }
     
-    message = parts[1]
-    core_value_text = parts[2].strip()
+    username_part = parts[0].strip()  # @username
+    message = parts[1]  # The message
+    core_value_text = parts[2].strip()  # #core-value
+    
+    # Extract username (remove @)
+    if not username_part.startswith("@"):
+        return {
+            "response_type": "ephemeral",
+            "text": "❌ Please mention a user with @username"
+        }
+    
+    username = username_part[1:]  # Remove @
+    
+    # Look up Slack user ID by username
+    receiver_slack_id = get_slack_user_by_username(username)
+    
+    if not receiver_slack_id:
+        return {
+            "response_type": "ephemeral",
+            "text": f"❌ Could not find Slack user '@{username}'. Make sure the username is correct."
+        }
     
     # Get receiver from database
     receiver = get_user_by_slack_id(receiver_slack_id, db)
     if not receiver:
-        # Get their info from Slack to help create account
+        # Get their info from Slack
         slack_info = get_slack_user_info(receiver_slack_id)
         return {
             "response_type": "ephemeral",
-            "text": f"❌ {slack_info['real_name'] if slack_info else 'This user'} hasn't registered yet. They need to sign up on the web app first."
+            "text": f"❌ {slack_info['real_name'] if slack_info else username} hasn't registered yet. They need to sign up on the web app first."
         }
     
     # Can't praise yourself
