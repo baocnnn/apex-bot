@@ -439,6 +439,11 @@ async def get_channel_name(channel_id):
             json={"channel": channel_id}
         )
         data = response.json()
+        
+        if not data.get("ok"):
+            print(f"❌ Failed to get channel info: {data.get('error')} for channel {channel_id}")
+            return "unknown-channel"
+            
         if data.get("ok"):
             return data.get("channel", {}).get("name", "unknown-channel")
         return "unknown-channel"
@@ -476,7 +481,17 @@ async def post_to_slack(channel_id, text=None, blocks=None):
             headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
             json=payload
         )
-        return response.json()
+        result = response.json()
+        
+        # Log the full response to see what went wrong
+        print(f"📤 Slack API Response: {result}")
+        
+        if not result.get("ok"):
+            print(f"❌ Failed to post to Slack: {result.get('error')}")
+        else:
+            print(f"✅ Successfully posted to channel {channel_id}")
+            
+        return result
 # ============== TEST ENDPOINT ==============
 
 @app.get("/")
