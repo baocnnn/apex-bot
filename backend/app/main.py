@@ -2,7 +2,7 @@ import httpx
 import asyncio
 import os
 from datetime import datetime
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -360,22 +360,31 @@ def admin_get_all_redemptions(
     
     return redemptions
 
-
 @app.post("/slack/events")
 async def slack_events(request: Request):
     data = await request.json()
+    
+    # URL verification challenge (Slack sends this when you first configure)
+    if data.get("type") == "url_verification":
+        return {"challenge": data["challenge"]}
 
     if data.get("type") == "event_callback":
         event = data["event"]
 
+        # Ignore bot messages to prevent loops
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             return {"ok": True}
         
-        message_text = event.get("test", "")
+        # FIXED: Changed "test" to "text"
+        message_text = event.get("text", "")
         if event.get("type") == "message" and message_text.upper().startswith("TTA"):
             await handle_tta_message(event)
-        return {"ok": True}
+    
+    return {"ok": True}
+
+
 async def handle_tta_message(event):
+    """Cross-post TTA message to #meetings channel"""
     original_text = event.get("text", "")
     user_id = event.get("user")
     channel_id = event.get("channel")
@@ -420,6 +429,7 @@ async def handle_tta_message(event):
     
     print(f"✅ Posted TTA from #{channel_name} to #meetings")
 
+
 async def get_channel_name(channel_id):
     """Get channel name from ID"""
     async with httpx.AsyncClient() as client:
@@ -433,6 +443,7 @@ async def get_channel_name(channel_id):
             return data.get("channel", {}).get("name", "unknown-channel")
         return "unknown-channel"
 
+
 async def get_user_info(user_id):
     """Get user details from Slack"""
     async with httpx.AsyncClient() as client:
@@ -445,6 +456,7 @@ async def get_user_info(user_id):
         if data.get("ok"):
             return data.get("user", {})
         return {}
+
 
 async def post_to_slack(channel_id, text=None, blocks=None):
     """Post message to Slack channel"""
