@@ -37,6 +37,17 @@ app.include_router(slack_router)
 
 MEETINGS_CHANNEL_ID = os.getenv("MEETINGS_CHANNEL_ID")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+TRELLO_API_KEY = os.getenv("TRELLO_API_KEY")
+TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
+
+CHANNEL_TO_TRELLO_LIST = {
+    "provider":    "6483543ec44e0f245fae9002",  # L10 - Provider
+    "frontoffice": "61e2179fcbf1fe646e85cf69",  # L10 - Front
+    "hygienist":   "617431ba61c5c56bedea397c",  # L10 - Hygiene
+    "assistant":   "61e214aaf219b71c221944f4",  # L10 - Dental Assistant
+    "hygiene":     "61e214aaf219b71c221944f4",  # L10 - Dental Assistant
+}
+
 # ============== AUTHENTICATION ENDPOINTS ==============
     
 @app.post("/register", response_model=schemas.UserResponse)
@@ -384,16 +395,76 @@ async def slack_events(request: Request):
 
 
 async def handle_tta_message(event):
-    """Handle TTA message - will create Trello card when configured"""
+    """Handle TTA message - create Trello card in appropriate board"""
     original_text = event.get("text", "")
+    user_id = event.get("user")
     channel_id = event.get("channel")
-    
-    channel_name = await get_channel_name(channel_id)
-    
-    # Just log it for now
-    print(f"TTA detected from #{channel_name}: {original_text}")
-    print(f"TODO: Create Trello card based on keywords")
+    timestamp = event.get("ts")
 
+    # Get channel name and user info
+    channel_name = await get_channel_name(channel_id)
+    user_info = await get_user_info(user_id)
+    user_real_name = user_info.get("real_name", "Unknown User")
+
+    # Build link back to original Slack message
+    workspace_domain = os.getenv("SLACK_WORKSPACE_DOMAIN", "apexdentalstudio")
+    message_link = f"https://{workspace_domain}.slack.com/archives/{channel_id}/p{timestamp.replace('.', '')}"
+
+    # Look up the Trello list for this channel
+    trello_list_id = CHANNEL_TO_TRELLO_LIST.get(channel_name)
+
+    if not trello_list_id:
+        print(f"No Trello board mapped for channel #{channel_name} - skipping")
+        return
+
+    # Create the Trello card
+    await create_trello_card(
+        list_id=trello_list_id,
+        channel_name=channel_name,
+        user_name=user_real_name,
+        message=original_text,
+        slack_link=message_link
+    )
+
+async def create_trello_card(list_id, channel_name, user_name, message, slack_link):
+    """Create a Trello card in the specified list"""
+    
+    # Card title: first 50 chars of message
+    title = message[:50] + "..." if len(message) > 50 else message
+    
+    # Card description: full message + who posted it + link back to Slack
+    description = f"""**Posted by:** {user_name}
+**Channel:** #{channel_name}
+
+**Message:**
+{message}
+
+---
+[🔗 View original Slack message]({slack_link})"""
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.trello.com/1/cards",
+            params={
+                "key": TRELLO_API_KEY,
+                "token": TRELLO_TOKEN
+            },
+            json={
+                "idList": list_id,
+                "name": title,
+                "desc": description,
+                "pos": "top"  # Add to top of list
+            }
+        )
+        result = response.json()
+
+        if result.get("id"):
+            card_url = result.get("url", "")
+            print(f"Trello card created in #{channel_name} board: {card_url}")
+        else:
+            print(f"Failed to create Trello card: {result}")
+
+    return result
 
 async def get_channel_name(channel_id):
     """Get channel name from ID"""
