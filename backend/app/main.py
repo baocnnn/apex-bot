@@ -41,12 +41,25 @@ TRELLO_API_KEY = os.getenv("TRELLO_API_KEY")
 TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
 
 CHANNEL_TO_TRELLO_LIST = {
-    "providers":    "6483543ec44e0f245fae9002",  # L10 - Provider
-    "frontoffice": "61e2179fcbf1fe646e85cf69",  # L10 - Front
-    "hygienist":   "617431ba61c5c56bedea397c",  # L10 - Hygiene
-    "assistants":   "61e214aaf219b71c221944f4",  # L10 - Dental Assistant
-    "hygiene":     "61e214aaf219b71c221944f4",  # L10 - Dental Assistant
+    "provider": {
+        "issues": "6483543ec44e0f245fae9002"
+    },
+    "frontoffice": {
+        "issues":       "61e2179fcbf1fe646e85cf69",
+        "announcement": "61e2173c83bddb327ec93d4d"
+    },
+    "hygienist": {
+        "issues": "617431ba61c5c56bedea397c"
+    },
+    "assistant": {
+        "issues": "61e214aaf219b71c221944f4"
+    },
+    "hygiene": {
+        "issues": "61e214aaf219b71c221944f4"
+    },
 }
+
+processed_events = set()
 
 # ============== AUTHENTICATION ENDPOINTS ==============
     
@@ -374,8 +387,8 @@ def admin_get_all_redemptions(
 @app.post("/slack/events")
 async def slack_events(request: Request):
     data = await request.json()
-    
-    # URL verification challenge (Slack sends this when you first configure)
+
+    # URL verification challenge
     if data.get("type") == "url_verification":
         return {"challenge": data["challenge"]}
 
@@ -385,12 +398,29 @@ async def slack_events(request: Request):
         # Ignore bot messages to prevent loops
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             return {"ok": True}
-        
-        # FIXED: Changed "test" to "text"
-        message_text = event.get("text", "")
-        if event.get("type") == "message" and message_text.upper().startswith("TTA"):
+
+        # Deduplicate events using event_id
+        event_id = data.get("event_id")
+        if event_id in processed_events:
+            print(f"⚠️ Duplicate event {event_id} - skipping")
+            return {"ok": True}
+
+        # Mark event as processed
+        processed_events.add(event_id)
+
+        # Keep set from growing too large
+        if len(processed_events) > 1000:
+            processed_events.clear()
+
+        message_text = event.get("text", "").upper()
+
+        # Announcement is highest priority (frontoffice only)
+        if "ANNOUNCEMENT" in message_text:
+            await handle_announcement_message(event)
+        # TTA is second priority
+        elif message_text.startswith("TTA"):
             await handle_tta_message(event)
-    
+
     return {"ok": True}
 
 
@@ -401,17 +431,16 @@ async def handle_tta_message(event):
     channel_id = event.get("channel")
     timestamp = event.get("ts")
 
-    # Get channel name and user info
     channel_name = await get_channel_name(channel_id)
     user_info = await get_user_info(user_id)
     user_real_name = user_info.get("real_name", "Unknown User")
 
-    # Build link back to original Slack message
     workspace_domain = os.getenv("SLACK_WORKSPACE_DOMAIN", "apexdentalstudio")
     message_link = f"https://{workspace_domain}.slack.com/archives/{channel_id}/p{timestamp.replace('.', '')}"
 
-    # Look up the Trello list for this channel
-    trello_list_id = CHANNEL_TO_TRELLO_LIST.get(channel_name)
+    # Look up issues list for this channel
+    channel_config = CHANNEL_TO_TRELLO_LIST.get(channel_name, {})
+    trello_list_id = channel_config.get("issues")
 
     if not trello_list_id:
         print(f"⚠️ No Trello board mapped for channel #{channel_name} - skipping")
@@ -419,32 +448,28 @@ async def handle_tta_message(event):
 
     # Check for attached images
     files = event.get("files", [])
-    images = [
-        f for f in files
-        if f.get("mimetype", "").startswith("image/")
-    ]
-
+    images = [f for f in files if f.get("mimetype", "").startswith("image/")]
     print(f"📎 Found {len(images)} image(s) attached to TTA message")
 
-    # Create the Trello card
     await create_trello_card(
         list_id=trello_list_id,
         channel_name=channel_name,
         user_name=user_real_name,
         message=original_text,
         slack_link=message_link,
-        images=images
+        images=images,
+        card_type="TTA"
     )
 
-
-async def create_trello_card(list_id, channel_name, user_name, message, slack_link, images=None):
+async def create_trello_card(list_id, channel_name, user_name, message, slack_link, images=None, card_type="TTA"):
     """Create a Trello card in the specified list"""
 
     # Card title: first 50 chars of message
     title = message[:50] + "..." if len(message) > 50 else message
 
-    # Card description: full message + who posted it + link back to Slack
-    description = f"""**Posted by:** {user_name}
+    # Card description
+    description = f"""**Type:** {card_type}
+**Posted by:** {user_name}
 **Channel:** #{channel_name}
 
 **Message:**
@@ -454,7 +479,6 @@ async def create_trello_card(list_id, channel_name, user_name, message, slack_li
 [🔗 View original Slack message]({slack_link})"""
 
     async with httpx.AsyncClient() as client:
-        # Step 1: Create the card
         response = await client.post(
             "https://api.trello.com/1/cards",
             params={
@@ -471,19 +495,20 @@ async def create_trello_card(list_id, channel_name, user_name, message, slack_li
         result = response.json()
 
         if not result.get("id"):
-            print(f"Failed to create Trello card: {result}")
+            print(f"❌ Failed to create Trello card: {result}")
             return result
 
         card_id = result.get("id")
         card_url = result.get("url", "")
-        print(f"Trello card created in #{channel_name} board: {card_url}")
+        print(f"✅ Trello {card_type} card created in #{channel_name} board: {card_url}")
 
-        # Step 2: Attach images if any
         if images:
             for image in images:
                 await attach_image_to_card(client, card_id, image)
 
     return result
+
+
 
 
 async def attach_image_to_card(client, card_id, image):
@@ -493,26 +518,58 @@ async def attach_image_to_card(client, card_id, image):
     mimetype = image.get("mimetype", "image/jpeg")
 
     if not image_url:
-        print(f"No URL found for image {image_name}")
+        print(f"⚠️ No URL found for image {image_name}")
         return
 
     try:
-        print(f"Downloading image from Slack: {image_name}")
-        image_response = await client.get(
-            image_url,
-            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-            follow_redirects=True
-        )
+        # Retry logic - wait for image to be available
+        max_retries = 5
+        retry_delay = 2
+        image_data = None
 
-        if image_response.status_code != 200:
-            print(f"Failed to download image: {image_response.status_code}")
+        for attempt in range(max_retries):
+            print(f"⬇️ Attempting to download {image_name} (attempt {attempt + 1}/{max_retries})...")
+
+            image_response = await client.get(
+                image_url,
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                follow_redirects=True,
+                timeout=30.0
+            )
+
+            content_type = image_response.headers.get("content-type", "")
+            content_length = len(image_response.content)
+
+            print(f"📥 Status: {image_response.status_code} | Content-Type: {content_type} | Size: {content_length} bytes")
+
+            if (
+                image_response.status_code == 200
+                and content_length > 1000
+                and "image" in content_type
+            ):
+                image_data = image_response.content
+                print(f"✅ Successfully downloaded {image_name} ({content_length} bytes)")
+                break
+            else:
+                if attempt < max_retries - 1:
+                    print(f"⏳ Image not ready yet, waiting {retry_delay} seconds before retry...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    print(f"❌ Image never became available after {max_retries} attempts")
+                    return
+
+        if not image_data:
+            print(f"❌ Failed to get image data for {image_name}")
             return
 
-        image_data = image_response.content
-        print(f"Downloaded image: {image_name} ({len(image_data)} bytes)")
+        # Handle HEIC format
+        if image_name.upper().endswith('.HEIC'):
+            print(f"🔄 HEIC format detected, renaming to JPG for compatibility")
+            image_name = image_name.rsplit('.', 1)[0] + '.jpg'
+            mimetype = 'image/jpeg'
 
-        # Step 2: Upload image to Trello card
-        print(f"Uploading image to Trello card...")
+        # Upload to Trello
+        print(f"⬆️ Uploading {image_name} to Trello card...")
         upload_response = await client.post(
             f"https://api.trello.com/1/cards/{card_id}/attachments",
             params={
@@ -521,18 +578,22 @@ async def attach_image_to_card(client, card_id, image):
             },
             files={
                 "file": (image_name, image_data, mimetype)
-            }
+            },
+            timeout=30.0
         )
 
         upload_result = upload_response.json()
 
         if upload_result.get("id"):
-            print(f"Image attached to Trello card: {image_name}")
+            print(f"✅ Image attached to Trello card: {image_name}")
         else:
-            print(f"Failed to attach image: {upload_result}")
+            print(f"❌ Failed to attach image: {upload_result}")
 
     except Exception as e:
-        print(f"Error attaching image: {e}")
+        print(f"❌ Error attaching image: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 async def get_channel_name(channel_id):
     """Get channel name from ID"""
@@ -540,17 +601,15 @@ async def get_channel_name(channel_id):
         response = await client.get(
             "https://slack.com/api/conversations.info",
             headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-            params={"channel": channel_id}  # Changed from json to params
+            params={"channel": channel_id}
         )
         data = response.json()
-        
+
         if not data.get("ok"):
             print(f"❌ Failed to get channel info: {data.get('error')} for channel {channel_id}")
             return "unknown-channel"
-            
-        if data.get("ok"):
-            return data.get("channel", {}).get("name", "unknown-channel")
-        return "unknown-channel"
+
+        return data.get("channel", {}).get("name", "unknown-channel")
 
 
 async def get_user_info(user_id):
@@ -559,19 +618,18 @@ async def get_user_info(user_id):
         response = await client.get(
             "https://slack.com/api/users.info",
             headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-            params={"user": user_id}  # Changed from json to params
+            params={"user": user_id}
         )
         data = response.json()
-        
+
         if not data.get("ok"):
             print(f"❌ Failed to get user info: {data.get('error')} for user {user_id}")
             return {}
-            
-        if data.get("ok"):
-            user_data = data.get("user", {})
-            print(f"✅ Got user info for: {user_data.get('real_name', 'Unknown')}")
-            return user_data
-        return {}
+
+        user_data = data.get("user", {})
+        print(f"✅ Got user info for: {user_data.get('real_name', 'Unknown')}")
+        return user_data
+
 
 
 async def post_to_slack(channel_id, text=None, blocks=None):
@@ -581,28 +639,55 @@ async def post_to_slack(channel_id, text=None, blocks=None):
             "channel": channel_id,
             "unfurl_links": False
         }
-        
+
         if blocks:
             payload["blocks"] = blocks
         if text:
             payload["text"] = text
-            
+
         response = await client.post(
             "https://slack.com/api/chat.postMessage",
             headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
             json=payload
         )
-        result = response.json()
-        
-        # Log the full response to see what went wrong
-        print(f"📤 Slack API Response: {result}")
-        
-        if not result.get("ok"):
-            print(f"❌ Failed to post to Slack: {result.get('error')}")
-        else:
-            print(f"✅ Successfully posted to channel {channel_id}")
-            
-        return result
+        return response.json()
+    
+async def handle_announcement_message(event):
+    """Handle announcement - only for #frontoffice channel"""
+    original_text = event.get("text", "")
+    user_id = event.get("user")
+    channel_id = event.get("channel")
+    timestamp = event.get("ts")
+
+    channel_name = await get_channel_name(channel_id)
+    user_info = await get_user_info(user_id)
+    user_real_name = user_info.get("real_name", "Unknown User")
+
+    workspace_domain = os.getenv("SLACK_WORKSPACE_DOMAIN", "apexdentalstudio")
+    message_link = f"https://{workspace_domain}.slack.com/archives/{channel_id}/p{timestamp.replace('.', '')}"
+
+    # Look up announcement list for this channel
+    channel_config = CHANNEL_TO_TRELLO_LIST.get(channel_name, {})
+    trello_list_id = channel_config.get("announcement")
+
+    if not trello_list_id:
+        print(f"⚠️ No announcement list mapped for channel #{channel_name} - skipping")
+        return
+
+    # Check for attached images
+    files = event.get("files", [])
+    images = [f for f in files if f.get("mimetype", "").startswith("image/")]
+    print(f"📎 Found {len(images)} image(s) attached to announcement")
+
+    await create_trello_card(
+        list_id=trello_list_id,
+        channel_name=channel_name,
+        user_name=user_real_name,
+        message=original_text,
+        slack_link=message_link,
+        images=images,
+        card_type="Announcement"
+    )
 # ============== TEST ENDPOINT ==============
 
 @app.get("/")
