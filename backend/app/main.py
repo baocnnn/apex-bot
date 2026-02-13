@@ -595,6 +595,7 @@ async def attach_image_to_card(client, card_id, image):
         traceback.print_exc()
 
 
+
 async def get_channel_name(channel_id):
     """Get channel name from ID"""
     async with httpx.AsyncClient() as client:
