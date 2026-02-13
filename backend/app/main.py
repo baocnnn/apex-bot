@@ -48,6 +48,9 @@ CHANNEL_TO_TRELLO_LIST = {
     "hygiene":     "61e214aaf219b71c221944f4",  # L10 - Dental Assistant
 }
 
+processed_events = set()
+
+
 # ============== AUTHENTICATION ENDPOINTS ==============
     
 @app.post("/register", response_model=schemas.UserResponse)
@@ -375,7 +378,7 @@ def admin_get_all_redemptions(
 async def slack_events(request: Request):
     data = await request.json()
     
-    # URL verification challenge (Slack sends this when you first configure)
+    # URL verification challenge
     if data.get("type") == "url_verification":
         return {"challenge": data["challenge"]}
 
@@ -386,7 +389,20 @@ async def slack_events(request: Request):
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             return {"ok": True}
         
-        # FIXED: Changed "test" to "text"
+        # Deduplicate events using event_id
+        event_id = data.get("event_id")
+        if event_id in processed_events:
+            print(f"⚠️ Duplicate event {event_id} - skipping")
+            return {"ok": True}
+        
+        # Mark event as processed
+        processed_events.add(event_id)
+        
+        # Keep set from growing too large
+        if len(processed_events) > 1000:
+            processed_events.clear()
+        
+        # Check if message starts with TTA (case-insensitive)
         message_text = event.get("text", "")
         if event.get("type") == "message" and message_text.upper().startswith("TTA"):
             await handle_tta_message(event)
@@ -493,26 +509,39 @@ async def attach_image_to_card(client, card_id, image):
     mimetype = image.get("mimetype", "image/jpeg")
 
     if not image_url:
-        print(f"No URL found for image {image_name}")
+        print(f"⚠️ No URL found for image {image_name}")
         return
 
     try:
-        print(f"Downloading image from Slack: {image_name}")
+        # Wait for Slack to finish processing the file
+        import asyncio
+        print(f"⏳ Waiting for Slack to process image...")
+        await asyncio.sleep(2)
+
+        # Download image from Slack
+        print(f"⬇️ Downloading image from Slack: {image_name}")
         image_response = await client.get(
             image_url,
             headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-            follow_redirects=True
+            follow_redirects=True,
+            timeout=30.0
         )
 
         if image_response.status_code != 200:
-            print(f"Failed to download image: {image_response.status_code}")
+            print(f"❌ Failed to download image: {image_response.status_code}")
             return
 
         image_data = image_response.content
-        print(f"Downloaded image: {image_name} ({len(image_data)} bytes)")
+        print(f"✅ Downloaded image: {image_name} ({len(image_data)} bytes)")
 
-        # Step 2: Upload image to Trello card
-        print(f"Uploading image to Trello card...")
+        # Handle HEIC format
+        if image_name.upper().endswith('.HEIC'):
+            print(f"🔄 HEIC format detected, renaming to JPG for compatibility")
+            image_name = image_name.rsplit('.', 1)[0] + '.jpg'
+            mimetype = 'image/jpeg'
+
+        # Upload to Trello
+        print(f"⬆️ Uploading {image_name} to Trello card...")
         upload_response = await client.post(
             f"https://api.trello.com/1/cards/{card_id}/attachments",
             params={
@@ -521,18 +550,21 @@ async def attach_image_to_card(client, card_id, image):
             },
             files={
                 "file": (image_name, image_data, mimetype)
-            }
+            },
+            timeout=30.0
         )
 
         upload_result = upload_response.json()
 
         if upload_result.get("id"):
-            print(f"Image attached to Trello card: {image_name}")
+            print(f"✅ Image attached to Trello card: {image_name}")
         else:
-            print(f"Failed to attach image: {upload_result}")
+            print(f"❌ Failed to attach image: {upload_result}")
 
     except Exception as e:
-        print(f"Error attaching image: {e}")
+        print(f"❌ Error attaching image: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
 
 async def get_channel_name(channel_id):
     """Get channel name from ID"""
