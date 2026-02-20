@@ -57,6 +57,9 @@ CHANNEL_TO_TRELLO_LIST = {
     "hygiene": {
         "issues": "61e214aaf219b71c221944f4"
     },
+    "l10-va": {
+        "issues": "6386c669750f1a01644412ca"
+    },
 }
 
 processed_events = set()
